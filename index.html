@@ -81,33 +81,41 @@
 
 // Parse CSV into an array of objects
 function parseCSV(csv) {
-    const rows = csv.trim().split('\n');  // Split by newline to get rows
-    const headers = rows[0].split(',');   // Extract the headers (time, on)
+    const rows = csv.trim().split('\n');
 
-    // Map each row (after the headers) to an object with time and on fields
-    return rows.slice(1).map(row => {
-        const values = row.split(',').map(val => val.trim()); // Trim each value
+    return rows.slice(1)
+        .map((row) => row.split(',').map((val) => val.trim()))
+        .filter((values) => values.length >= 2)
+        .map((values) => {
+            const parsed = luxon.DateTime.fromFormat(values[0], 'M/d/yyyy H:mm:ss');
+            const status = parseInt(values[1], 10);
 
-        // Parse the date using Luxon (assuming the format is M/d/yyyy H:mm:ss)
-        const time = luxon.DateTime.fromFormat(values[0], 'M/d/yyyy H:mm:ss').toJSDate();
+            if (!parsed.isValid || Number.isNaN(status)) {
+                return null;
+            }
 
-        // Debugging: Log the parsed values
-        console.log('Parsed time:', time, 'Status:', values[1]);
-
-        return {
-            time: time,                    // Parsed Date object
-            on: parseInt(values[1], 10)    // on (convert "1" or "0" to integer)
-        };
-    });
+            return {
+                time: parsed.toJSDate(),
+                on: status
+            };
+        })
+        .filter(Boolean);
 }
 
 
         // Update status indicator based on the latest data
         function updateStatusIndicator(data) {
             const statusElement = document.getElementById('status');
+
+            if (!data.length) {
+                statusElement.textContent = "Status unavailable";
+                statusElement.classList.remove('online');
+                statusElement.classList.add('offline');
+                return;
+            }
+
             const lastEntry = data[data.length - 1];
-            console.log("Status: >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>",lastEntry.on)
-            if (lastEntry.on == 1) {
+            if (lastEntry.on === 1) {
                 statusElement.textContent = "Website is Online";
                 statusElement.classList.add('online');
                 statusElement.classList.remove('offline');
@@ -194,6 +202,10 @@ async function loadStatusPage() {
         // Update the status indicator based on the latest entry
         updateStatusIndicator(data);
 
+        if (!data.length) {
+            return;
+        }
+
         // Render the chart
         renderChart(data);
 
@@ -205,13 +217,16 @@ async function loadStatusPage() {
 }
 
 function message() {
-    if (new URLSearchParams(document.location.search).get("message") != "") {
-        document.getElementById('message').textContent = new URLSearchParams(document.location.search).get("message")
+    const messageText = new URLSearchParams(document.location.search).get("message");
+    if (messageText) {
+        document.getElementById('message').textContent = messageText;
     }
     
 }
 function reloadStats() {
-    window.chart.destroy();
+    if (window.chart) {
+        window.chart.destroy();
+    }
     const statusElement = document.getElementById('status');
     statusElement.classList.remove('offline');statusElement.classList.remove('online');statusElement.textContent ="Loading..."
     loadStatusPage();
