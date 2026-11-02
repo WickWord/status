@@ -76,35 +76,35 @@
         // Fetch CSV data
         async function fetchCSV(url) {
             const response = await fetch(url);
+            if (!response.ok) throw new Error('Status request failed: ' + response.status);
             return await response.text();
         }
 
 // Parse CSV into an array of objects
 function parseCSV(csv) {
-    const rows = csv.trim().split('\n');  // Split by newline to get rows
-    const headers = rows[0].split(',');   // Extract the headers (time, on)
-
-    // Map each row (after the headers) to an object with time and on fields
-    return rows.slice(1).map(row => {
-        const values = row.split(',').map(val => val.trim()); // Trim each value
-
-        // Parse the date using Luxon (assuming the format is M/d/yyyy H:mm:ss)
-        const time = luxon.DateTime.fromFormat(values[0], 'M/d/yyyy H:mm:ss').toJSDate();
-
-        // Debugging: Log the parsed values
-        console.log('Parsed time:', time, 'Status:', values[1]);
-
-        return {
-            time: time,                    // Parsed Date object
-            on: parseInt(values[1], 10)    // on (convert "1" or "0" to integer)
-        };
-    });
+    const rows = csv.trim().split(/\r?\n/);
+    if (rows[0].split(',').map(value => value.trim()).join(',') !== 'time,on') {
+        throw new Error('Unexpected status CSV header');
+    }
+    return rows.slice(1).flatMap(row => {
+        const values = row.split(',').map(value => value.trim());
+        if (values.length !== 2 || !/^[01]$/.test(values[1])) return [];
+        const parsed = luxon.DateTime.fromFormat(values[0], 'M/d/yyyy H:mm:ss');
+        if (!parsed.isValid) return [];
+        return [{time: parsed.toJSDate(), on: Number(values[1])}];
+    }).sort((a, b) => a.time - b.time);
 }
 
+function showUnavailable() {
+    const element = document.getElementById('status');
+    element.textContent = 'Status unavailable — retrying...';
+    element.classList.remove('online', 'offline');
+}
 
         // Update status indicator based on the latest data
         function updateStatusIndicator(data) {
             const statusElement = document.getElementById('status');
+            if (!data.length) { showUnavailable(); return; }
             const lastEntry = data[data.length - 1];
             console.log("Status: >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>",lastEntry.on)
             if (lastEntry.on == 1) {
@@ -125,6 +125,7 @@ function renderChart(data) {
     const labels = data.map(entry => new Date(entry.time));  // Convert time to Date objects
     const values = data.map(entry => entry.on);
 
+    if (window.chart) window.chart.destroy();
     window.chart=new Chart(ctx, {
         type: 'line',
         data: {
@@ -181,28 +182,49 @@ function renderChart(data) {
 }
 
 
-// Main function to load data and render the page
+// Schedule only after completion: one timer, no overlapping requests.
+let pollTimer = null;
+let loading = false;
+let stopped = false;
+let failures = 0;
 async function loadStatusPage() {
+    if (loading || stopped) return;
+    clearTimeout(pollTimer);
+    pollTimer = null;
+    loading = true;
     try {
-        // Fetch and parse the CSV file
-        const csv = await fetchCSV('https://script.google.com/macros/s/AKfycbyW6p7dpQRAbNbhYyAZy4NyYVf_6k08oyS3jYQsYyIsAsInjGkjuAg0zgwcaJzDQM-C0A/exec'); // Update the path to your hosted CSV file
+        const csv = await fetchCSV('https://script.google.com/macros/s/AKfycbyW6p7dpQRAbNbhYyAZy4NyYVf_6k08oyS3jYQsYyIsAsInjGkjuAg0zgwcaJzDQM-C0A/exec');
+        if (stopped) return;
         const data = parseCSV(csv);
-
-        // Debugging: Log the final parsed data array
-        console.log('Parsed CSV data:', data);
-
-        // Update the status indicator based on the latest entry
-        updateStatusIndicator(data);
-
-        // Render the chart
+        if (!data.length) throw new Error('No valid status samples');
         renderChart(data);
-
-        message()
-        const intervalID = setInterval(reloadStats, 60000);
+        updateStatusIndicator(data);
+        message();
+        failures = 0;
     } catch (error) {
-        console.error('Error fetching or parsing CSV:', error);
+        if (!stopped) {
+            failures += 1;
+            showUnavailable();
+            if (window.chart) { window.chart.destroy(); window.chart = null; }
+            console.error('Error fetching or parsing CSV:', error);
+        }
+    } finally {
+        loading = false;
+        if (!stopped) {
+            const delay = Math.min(60000 * 2 ** Math.min(failures, 4), 900000);
+            pollTimer = setTimeout(loadStatusPage, delay);
+        }
     }
 }
+
+window.addEventListener('pagehide', () => {
+    stopped = true;
+    clearTimeout(pollTimer);
+    if (window.chart) { window.chart.destroy(); window.chart = null; }
+});
+window.addEventListener('pageshow', () => {
+    if (stopped) { stopped = false; loadStatusPage(); }
+});
 
 function message() {
     if (new URLSearchParams(document.location.search).get("message") != "") {
@@ -211,13 +233,8 @@ function message() {
     
 }
 function reloadStats() {
-    window.chart.destroy();
-    const statusElement = document.getElementById('status');
-    statusElement.classList.remove('offline');statusElement.classList.remove('online');statusElement.textContent ="Loading..."
-    loadStatusPage();
+    return loadStatusPage();
 }
-
-
 
         // Load the status page
         loadStatusPage();
@@ -226,3 +243,4 @@ function reloadStats() {
 
 </body>
 </html>
+
